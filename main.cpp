@@ -15,10 +15,10 @@
 #define NUM_R 83    // 文字盤数字を配置する半径
 
 // --- ソナー演出定義 ---
-#define SONAR_F 850         // ソナー音の基本周波数(Hz)
+#define SONAR_F 800         // ソナー音の基本周波数(Hz)
 #define SONAR_MAX_R 260     // 波紋が消滅する最大半径
 #define SONAR_SPD 12        // 波紋が1フレームに広がるピクセル数
-#define AUTO_SONAR_MS 10000 // GPS未受信時の自動ソナー間隔 (20秒)
+#define AUTO_SONAR_MS 10000 // GPS未受信時の自動ソナー間隔 (ms)
 
 // --- モード・速度レンジ定義 ---
 #define MODE_ALT 0     // 高度計モード識別子
@@ -49,6 +49,7 @@ int displayMode = MODE_CLK;      // 現在表示中の画面モード
 float currentMaxSpd = RNG_MIN;   // 速度計の現在の最大スケール
 volatile int sonarR = -1;        // 波紋の現在の半径 (-1は停止中)
 volatile bool sonarTrig = false; // 音再生タスクへのトリガーフラグ
+bool isRTCInitialSynced = false; // 同期管理用フラグ
 
 // --- 描画補助関数群 ---
 
@@ -64,6 +65,60 @@ uint16_t fadeCol(uint16_t color, int br)
   uint8_t g = (uint8_t)((((color >> 5) & 0x3F) * br) >> 8);  // 緑成分の減衰
   uint8_t b = (uint8_t)(((color & 0x1F) * br) >> 8);         // 青成分の減衰
   return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+/**
+ * @brief 経度からタイムゾーンを推定し、RTCを同期する関数
+ * 地球360度を24時間で分割（15度＝1時間）してオフセットを算出する
+ */
+void syncRTCWithAutoTZ()
+{
+  // GPSの各データ（位置・日付・時刻）がすべて有効か確認
+  if ((!gps.location.isValid()) || (!gps.date.isValid()) || (!gps.time.isValid()))
+  {
+    return;
+  }
+
+  // --- タイムゾーン計算 ---
+  // 経度(lng)を15.0で割り、四捨五入することで最も近い時間帯の時差を求める
+  // 例: 日本(135.0度) / 15.0 = +9時間
+  double lng = gps.location.lng();
+  int tzOffset = round(lng / 15.0);
+
+  // RTC設定用の構造体を宣言
+  m5::rtc_datetime_t dt;
+
+  // GPS(UTC)から基本情報を取得
+  int year = gps.date.year();
+  int month = gps.date.month();
+  int day = gps.date.day();
+  int hour = gps.time.hour() + tzOffset; // 時差を加算
+  int min = gps.time.minute();
+  int sec = gps.time.second();
+
+  // --- 日付の境界線補正（簡易処理） ---
+  // 時差加算により24時を超えた場合、または0時を下回った場合の処理
+  if (hour >= 24)
+  {
+    hour -= 24;
+    day++;
+  }
+  else if (hour < 0)
+  {
+    hour += 24;
+    day--;
+  }
+
+  // RTC構造体に値を代入 (Core2の内部RTC: BM8563用)
+  dt.date.year = (uint16_t)year;
+  dt.date.month = (uint8_t)month;
+  dt.date.date = (uint8_t)day;
+  dt.time.hours = (uint8_t)hour;
+  dt.time.minutes = (uint8_t)min;
+  dt.time.seconds = (uint8_t)sec;
+
+  M5.Rtc.setDateTime(dt);    // 内部RTCへの書き込み実行
+  isRTCInitialSynced = true; // 同期完了フラグを立てる
 }
 
 /**
@@ -198,48 +253,26 @@ void refresh()
     }
     else if (displayMode == MODE_CLK) // 時計モード
     {
-      int tz = (int)((gps.location.lng() / 15.0) +
-                     (gps.location.lng() >= 0 ? 0.5 : -0.5)); // 簡易時差算出
-      int h = (gps.time.hour() + tz);                         // 現地時間計算
-      if (h >= 24)
-      {
-        h -= 24;
-      }
-      else if (h < 0)
-      {
-        h += 24;
-      } // 24時間補正
-      sprintf(strBuf, "%02d:%02d", h, gps.time.minute()); // 時刻文字列
-      drawCommonUI("CHRONOMETER", strBuf, "LOCAL TIME");  // ベース描画
+      auto dt = M5.Rtc.getDateTime(); // 現地時間取得
+      int hour = dt.time.hours;       // 時取得
+      int minute = dt.time.minutes;   // 分取得
+      int second = dt.time.seconds;   // 秒取得
+
+      sprintf(strBuf, "%02d:%02d", hour, minute);        // 時刻文字列
+      drawCommonUI("CHRONOMETER", strBuf, "LOCAL TIME"); // ベース描画
       for (int i = 1; i <= 12; i++)
       { // 時計専用の1-12目盛り配置
         float rad = (((i * 30.0f) - 90.0f) * M_PI / 180.0f);
         canvas.drawCenterString(String(i), (int)(CTR_X + NUM_R * cos(rad)), (int)(CTR_Y + NUM_R * sin(rad)), &fonts::Font2);
       }
-      if (gps.time.isValid())
-      { // 時刻が有効なら針を描画
-        drawNeedle(fmod((float)h, 12.0f) + ((float)gps.time.minute() / 60.0f), 12.0f, (GAUGE_R - 45), COL_BZ_D, 6);
-        drawNeedle((float)gps.time.minute() + ((float)gps.time.second() / 60.0f), 60.0f, (GAUGE_R - 20), COL_MAIN, 3);
-        drawNeedle((float)gps.time.second(), 60.0f, (GAUGE_R - 10), COL_MAIN, 1);
-      }
+      drawNeedle(fmod((float)hour, 12.0f) + ((float)minute / 60.0f), 12.0f, (GAUGE_R - 45), COL_BZ_D, 6);
+      drawNeedle((float)minute + ((float)second / 60.0f), 60.0f, (GAUGE_R - 20), COL_MAIN, 3);
+      drawNeedle((float)second, 60.0f, (GAUGE_R - 10), COL_MAIN, 1);
     }
     else // 速度計モード
     {
       float currentSpeed = (float)gps.speed.kmph(); // 時速取得
-      // オートレンジロジック: 90%で拡大、30%で縮小
-      if (currentSpeed > (currentMaxSpd * 0.9f))
-      { // 飛行機用
-        currentMaxSpd = (currentMaxSpd < RNG_MID) ? RNG_MID : RNG_MAX;
-      }
-      // 徒歩用はいらないのでコメントアウト
-      // else if (currentSpeed < (currentMaxSpd * 0.3f) && (currentMaxSpd > RNG_MIN))
-      // {
-      //   currentMaxSpd = (currentMaxSpd > RNG_MID) ? RNG_MID : RNG_MIN;
-      // }
-      else // 自動車用
-      {
-        currentMaxSpd = RNG_MAX;
-      }
+      currentMaxSpd = RNG_MID;
       sprintf(strBuf, "%.1f", currentSpeed);      // 小数点1位まで
       drawCommonUI("SPEED", strBuf, "KM/H");      // ベース描画
       drawDialNumbers(5, (currentMaxSpd / 4.0f)); // 4分割の速度目盛りを描画
@@ -258,10 +291,6 @@ void refresh()
     {
       uint16_t fC = fadeCol(COL_MAIN, br);         // フェードカラー生成
       canvas.drawCircle(CTR_X, CTR_Y, sonarR, fC); // メインリング
-      if (sonarR > 10)
-      {
-        canvas.drawCircle(CTR_X, CTR_Y, (sonarR - 4), fC);
-      } // 二重リング演出
     }
     sonarR += SONAR_SPD; // 波紋を拡大
     if (sonarR > SONAR_MAX_R)
@@ -317,6 +346,12 @@ void loop()
   while (GPSRaw.available() > 0) // 測位が有効の間ループ
   {
     gps.encode(GPSRaw.read()); // GPSパケットの受信と解析
+  }
+
+  // 位置・時刻が確定し、かつ未同期の場合にRTC同期を実行
+  if ((!isRTCInitialSynced) && (gps.location.isValid()) && (gps.time.isUpdated()))
+  {
+    syncRTCWithAutoTZ();
   }
   refresh();              // 画面描画の実行
   delay(MAIN_LOOP_DELAY); // CPUの過負荷防止

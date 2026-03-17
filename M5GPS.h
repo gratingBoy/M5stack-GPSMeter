@@ -3,6 +3,8 @@
 
 #include <M5Unified.h> // M5Stack全機種を統合管理するライブラリ
 #include <TinyGPS++.h> // GPS信号のNMEAフォーマットを解析するライブラリ
+#include <SD.h>
+#include <SPI.h>
 
 // --- 通信・ハードウェア定義 ---
 #define GPS_BAUD 9600 // GPSユニットの標準通信速度
@@ -18,10 +20,10 @@
 #define NUM_R 83    // 文字盤数字を配置する半径
 
 // --- ソナー演出定義 ---
-#define SONAR_F 800         // ソナー音の基本周波数(Hz)
-#define SONAR_MAX_R 260     // 波紋が消滅する最大半径
-#define SONAR_SPD 12        // 波紋が1フレームに広がるピクセル数
-#define AUTO_SONAR_MS 10000 // GPS未受信時の自動ソナー間隔 (ms)
+#define SONAR_F 800                 // ソナー音の基本周波数(Hz)
+#define SONAR_MAX_R 260             // 波紋が消滅する最大半径
+#define SONAR_SPD 12                // 波紋が1フレームに広がるピクセル数
+#define AUTO_SONAR_INTERVAL_MS 5000 // GPS未受信時の自動ソナー間隔 (ms)
 
 // --- モード・速度レンジ定義 ---
 #define MODE_ALT 0     // 高度計モード識別子
@@ -32,22 +34,34 @@
 #define RNG_MAX 500.0f // 速度計：高速レンジ (航空機・新幹線用)
 
 // --- カラー定義 (ブルーウォーター液晶スタイル) ---
-#define COL_BG 0x0000   // 背景色：完全な黒 (漆黒)
-#define COL_GRID 0x0110 // グリッド線：深い紺色
-#define COL_MAIN 0x07FF // メインカラー：発光シアン (水色)
-#define COL_SUB 0xf800  // サブカラー (赤)
-#define COL_BZ_D 0x0210 // 装飾：重厚な濃い青色
-#define COL_BZ_D 0x0210 // 装飾：重厚な濃い青色
+#define COL_BG 0x0000      // 背景色：完全な黒 (漆黒)
+#define COL_GRID 0x0110    // グリッド線：深い紺色
+#define COL_MAIN 0x07FF    // メインカラー：発光シアン (水色)
+#define COL_SUB 0xf800     // サブカラー (赤)
+#define COL_BZ_D 0x0210    // 装飾：重厚な濃い青色
+#define COL_BZ_D 0x0210    // 装飾：重厚な濃い青色
+#define LOG_INTERVAL 60000 // ロギング間隔 (1分)
+#define LOG_ONLY_RMC true  // RMCのみ記録
+
+// ロギング
+File gpsLogFile;                 // SDカードログファイル
+unsigned long lastLogTime = 0;   // 最後にログを書いた時間
+String nmeaLine = "";            // NMEAセンテンスバッファ
+int currentLogDate = -1;         // 現在開いているログファイルの日付
+unsigned long lastSonarTime = 0; // 最後にソナーを発射した時間
 
 // その他定義
-#define MAX_SP_VOL 100     // スピーカー最大音量
-#define MAIN_LOOP_DELAY 10 // メインループのディレイ時間 (ms)
-#define BUFF_SIZE 16       // バッファサイズ
+#define MAX_SP_VOL 100         // スピーカー最大音量
+#define MAIN_LOOP_DELAY 10     // メインループのディレイ時間 (ms)
+#define BUFF_SIZE 16           // バッファサイズ
+#define SONAR_MIN_SPEED 2.0    // 最低速度
+#define SONAR_START_SPEED 50.0 // 初期速度
 
 // --- グローバルインスタンス ---
 HardwareSerial GPSRaw(2);     // ESP32のUART2を使用
 TinyGPSPlus gps;              // GPS解析エンジンのインスタンス
 M5Canvas canvas(&M5.Display); // 描画用のメモリバッファ (スプライト)
+float sonarSpeed = 0;         // 現在の速度
 
 // --- 状態管理変数 ---
 int displayMode = MODE_CLK;      // 現在表示中の画面モード
@@ -55,5 +69,9 @@ float currentMaxSpd = RNG_MIN;   // 速度計の現在の最大スケール
 volatile int sonarR = -1;        // 波紋の現在の半径 (-1は停止中)
 volatile bool sonarTrig = false; // 音再生タスクへのトリガーフラグ
 bool isRTCInitialSynced = false; // 同期管理用フラグ
+bool sonarActive = false;        // ソナー状態
+
+// --- プロトタイプ宣言 ---
+void drawSonarEffect();
 
 #endif

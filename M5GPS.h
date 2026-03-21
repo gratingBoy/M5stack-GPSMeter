@@ -1,77 +1,126 @@
-#ifndef M5GPS_H // includeガード
-#define M5GPS_H
+#pragma once
 
-#include <M5Unified.h> // M5Stack全機種を統合管理するライブラリ
-#include <TinyGPS++.h> // GPS信号のNMEAフォーマットを解析するライブラリ
+#include <M5Unified.h>
+#include <TinyGPS++.h>
 #include <SD.h>
 #include <SPI.h>
+#include <math.h>
 
-// --- 通信・ハードウェア定義 ---
-#define GPS_BAUD 9600 // GPSユニットの標準通信速度
-#define GPS_RX_PIN 13 // Core2の受信ピン (DIPスイッチ設定:13)
-#define GPS_TX_PIN 14 // Core2の送信ピン (DIPスイッチ設定:14)
+/**
+ * @file M5GPS.h
+ * @brief M5デバイス用 GPS＋UI＋ログ共通定義ヘッダ
+ *
+ * GPS通信・画面描画・ログ機能で使用する定数や
+ * グローバルオブジェクトをまとめた共通ヘッダ。
+ *
+ * ハードウェア依存設定（ピン・ボーレート等）や
+ * UIレイアウト定義もここで管理する。
+ */
 
-// --- 画面レイアウト定義 ---
-#define SCR_W 320   // 画面の横幅
-#define SCR_H 240   // 画面の縦幅
-#define CTR_X 160   // 画面の水平中心
-#define CTR_Y 120   // 画面の垂直中心
-#define GAUGE_R 105 // メーター文字盤の半径
-#define NUM_R 83    // 文字盤数字を配置する半径
+// =================================
+// 数学定数
+// =================================
 
-// --- ソナー演出定義 ---
-#define SONAR_F 800                 // ソナー音の基本周波数(Hz)
-#define SONAR_MAX_R 260             // 波紋が消滅する最大半径
-#define SONAR_SPD 12                // 波紋が1フレームに広がるピクセル数
-#define AUTO_SONAR_INTERVAL_MS 5000 // GPS未受信時の自動ソナー間隔 (ms)
-
-// --- モード・速度レンジ定義 ---
-#define MODE_ALT 0     // 高度計モード識別子
-#define MODE_CLK 1     // 時計モード識別子
-#define MODE_SPD 2     // 速度計モード識別子
-#define RNG_MIN 20.0f  // 速度計：低速レンジ (徒歩・自転車用)
-#define RNG_MID 180.0f // 速度計：中速レンジ (自動車用)
-#define RNG_MAX 500.0f // 速度計：高速レンジ (航空機・新幹線用)
-
-// --- カラー定義 (ブルーウォーター液晶スタイル) ---
-#define COL_BG 0x0000      // 背景色：完全な黒 (漆黒)
-#define COL_GRID 0x0110    // グリッド線：深い紺色
-#define COL_MAIN 0x07FF    // メインカラー：発光シアン (水色)
-#define COL_SUB 0xf800     // サブカラー (赤)
-#define COL_BZ_D 0x0210    // 装飾：重厚な濃い青色
-#define COL_BZ_D 0x0210    // 装飾：重厚な濃い青色
-#define LOG_INTERVAL 60000 // ロギング間隔 (1分)
-#define LOG_ONLY_RMC true  // RMCのみ記録
-
-// ロギング
-File gpsLogFile;                 // SDカードログファイル
-unsigned long lastLogTime = 0;   // 最後にログを書いた時間
-String nmeaLine = "";            // NMEAセンテンスバッファ
-int currentLogDate = -1;         // 現在開いているログファイルの日付
-unsigned long lastSonarTime = 0; // 最後にソナーを発射した時間
-
-// その他定義
-#define MAX_SP_VOL 100         // スピーカー最大音量
-#define MAIN_LOOP_DELAY 10     // メインループのディレイ時間 (ms)
-#define BUFF_SIZE 16           // バッファサイズ
-#define SONAR_MIN_SPEED 2.0    // 最低速度
-#define SONAR_START_SPEED 50.0 // 初期速度
-
-// --- グローバルインスタンス ---
-HardwareSerial GPSRaw(2);     // ESP32のUART2を使用
-TinyGPSPlus gps;              // GPS解析エンジンのインスタンス
-M5Canvas canvas(&M5.Display); // 描画用のメモリバッファ (スプライト)
-float sonarSpeed = 0;         // 現在の速度
-
-// --- 状態管理変数 ---
-int displayMode = MODE_CLK;      // 現在表示中の画面モード
-float currentMaxSpd = RNG_MIN;   // 速度計の現在の最大スケール
-volatile int sonarR = -1;        // 波紋の現在の半径 (-1は停止中)
-volatile bool sonarTrig = false; // 音再生タスクへのトリガーフラグ
-bool isRTCInitialSynced = false; // 同期管理用フラグ
-bool sonarActive = false;        // ソナー状態
-
-// --- プロトタイプ宣言 ---
-void drawSonarEffect();
-
+#ifndef M_PI
+#define M_PI 3.14159265358979323846 ///< 円周率（未定義対策）
 #endif
+
+// =================================
+// GPS設定
+// =================================
+
+#define GPS_BAUD 9600 ///< GPSシリアル通信速度
+#define GPS_RX_PIN 13 ///< GPS受信ピン
+#define GPS_TX_PIN 14 ///< GPS送信ピン
+
+// =================================
+// 画面サイズ・レイアウト
+// =================================
+
+#define SCR_W 320 ///< 画面幅
+#define SCR_H 240 ///< 画面高さ
+
+#define CTR_X 160   ///< メーター中心X座標
+#define CTR_Y 160   ///< メーター中心Y座標
+#define GAUGE_R 105 ///< メーター半径
+
+// =================================
+// ソナーエフェクト
+// =================================
+
+#define SONAR_F 800     ///< ソナー周期（ms）
+#define SONAR_MAX_R 260 ///< ソナー最大半径
+
+// =================================
+// 表示モード
+// =================================
+
+#define MODE_ALT 0 ///< 高度計モード
+#define MODE_CLK 1 ///< 時計モード
+#define MODE_SPD 2 ///< 速度計モード
+
+// =================================
+// 汎用パラメータ
+// =================================
+
+#define RNG_MID 180.0f ///< 角度計算用基準値
+
+// =================================
+// カラー定義（RGB565）
+// =================================
+
+#define COL_BG 0x0000   ///< 背景色（黒）
+#define COL_GRID 0x0110 ///< グリッド色（暗め）
+#define COL_MAIN 0x07FF ///< メイン色（水色）
+#define COL_SUB 0xf800  ///< サブ色（赤）
+#define COL_BZ_D 0x0210 ///< 外枠・影
+
+// =================================
+// ログ設定
+// =================================
+
+#define LOG_INTERVAL 60000 ///< ログ周期（ms）
+#define LOG_ONLY_RMC true  ///< RMC文のみログ対象
+
+// =================================
+// システム設定
+// =================================
+
+#define MAX_SP_VOL 100     ///< スピーカー最大音量
+#define MAIN_LOOP_DELAY 10 ///< メインループ遅延(ms)
+
+// =================================
+// 外部オブジェクト
+// =================================
+
+extern HardwareSerial GPSRaw; ///< GPS用シリアル
+extern TinyGPSPlus gps;       ///< GPSデータ本体
+extern M5Canvas canvas;       ///< 描画キャンバス
+
+// =================================
+// ログ関連
+// =================================
+
+extern File gpsLogFile;           ///< ログファイル
+extern unsigned long lastLogTime; ///< 最終ログ時刻
+extern String nmeaLine;           ///< 受信NMEA文字列
+extern int currentLogDate;        ///< ログ日付（ファイル切替用）
+
+// =================================
+// ソナー状態
+// =================================
+
+extern volatile int sonarR;     ///< ソナー半径（割り込み更新）
+extern volatile bool sonarTrig; ///< トリガーフラグ
+extern bool sonarActive;        ///< ソナー有効状態
+
+// =================================
+// API
+// =================================
+
+/**
+ * @brief ソナーエフェクト描画
+ *
+ * 現在の状態に応じてレーダー風の円アニメーションを描画する。
+ */
+void drawSonarEffect();
